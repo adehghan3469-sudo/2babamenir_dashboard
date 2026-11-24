@@ -1,15 +1,13 @@
 import streamlit as st
-from openai import OpenAI
-import ee
-import geemap.foliumap as geemap
-from datetime import datetime, timedelta
 import plotly.graph_objects as go
+import requests
+from datetime import datetime
 
 # -------------------------------------------------
 # تنظیمات صفحه
 # -------------------------------------------------
 st.set_page_config(
-    page_title="از بابامنیر چه خبر",
+    page_title="دفتر فنی بابامنیر | گزارش کشاورزی و خدمات فنی",
     page_icon="🌾",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -20,272 +18,305 @@ st.set_page_config(
 # -------------------------------------------------
 st.markdown("""
 <style>
-    .stApp {
-        background-color: #f8f9fa;
-    }
     [data-testid="stSidebar"] {
         background-color: #1a3c34;
     }
     [data-testid="stSidebar"] * {
-        color: white !important;
+        color: #ffffff !important;
+    }
+    .main-title {
+        font-size: 1.7rem;
+        font-weight: 700;
+        color: #1a3c34;
+        margin-bottom: 0.3rem;
+    }
+    .banner-box {
+        background: linear-gradient(135deg, #1a3c34, #2e5c4e);
+        color: white;
+        padding: 14px 18px;
+        border-radius: 12px;
+        margin-bottom: 12px;
+        text-align: center;
+        font-size: 1.05rem;
+        font-weight: 500;
+        min-height: 70px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    .service-card {
+        background: #f8f9fa;
+        border-right: 4px solid #1a3c34;
+        padding: 12px 16px;
+        border-radius: 10px;
+        margin-bottom: 10px;
+    }
+    .mobile-card {
+        border-right: 4px solid #2980b9;
+        background: #f0f7ff;
+    }
+    .home-card {
+        border-right: 4px solid #e67e22;
+        background: #fff8f0;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # -------------------------------------------------
-# داده‌های نمونه هواشناسی (بعداً با API واقعی جایگزین کنید)
+# داده هواشناسی
 # -------------------------------------------------
-def get_current_weather():
-    return {
-        "temp": 12.4,
-        "feels_like": 12.2,
-        "humidity": 89,
-        "et0": 2.7,
-        "rain_prob": 0,
-        "wind": 3,
-        "wind_dir": "جنوب‌شرقی",
-        "condition": "صاف و آفتابی",
-        "min_temp": 9,
-        "max_temp": 25,
-        "location": "بابامنیر",
-        "date": "سه‌شنبه ۳ آذر ۱۴۰۵",
-        "time": "۱۹:۲۰"
+LOCATIONS = {
+    "بابامنیر": {"lat": 30.07, "lon": 51.21, "name": "بابامنیر"},
+}
+
+@st.cache_data(ttl=1800)
+def get_weather_data(lat, lon):
+    try:
+        url = (
+            f"https://api.open-meteo.com/v1/forecast?"
+            f"latitude={lat}&longitude={lon}"
+            f"&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,wind_direction_10m,surface_pressure"
+            f"&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,et0_fao_evapotranspiration"
+            f"&timezone=Asia%2FTehran&forecast_days=7"
+        )
+        r = requests.get(url, timeout=10)
+        return r.json()
+    except:
+        return None
+
+def weather_code_to_text(code):
+    codes = {
+        0: "صاف و آفتابی", 1: "عمدتاً صاف", 2: "نیمه ابری", 3: "ابری",
+        45: "مه‌آلود", 51: "باران ریز", 61: "بارانی", 80: "رگبار", 95: "رعد و برق"
     }
+    return codes.get(code, "نامشخص")
+
+def wind_dir_to_text(degree):
+    dirs = ["شمال", "شمال‌شرقی", "شرق", "جنوب‌شرقی", "جنوب", "جنوب‌غربی", "غرب", "شمال‌غربی"]
+    return dirs[round(degree / 45) % 8]
 
 # -------------------------------------------------
-# بخش گروک (از من بپرس)
+# بنر چرخشی خدمات (شبیه ترب)
 # -------------------------------------------------
-def get_grok_client():
-    return OpenAI(
-        api_key=st.secrets["xai"]["api_key"],
-        base_url="https://api.x.ai/v1"
-    )
+BANNERS = [
+    "📱 تعمیر تخصصی گوشی‌های چینی، سامسونگ و موتورولا — تعویض ال‌سی‌دی و باتری",
+    "🔧 تعمیرات لوازم خانگی در محل: تلویزیون، آبگرمکن، یخچال، کابینت و جوشکاری",
+    "🌾 مشاوره کشاورزی و توصیه‌های فنی روز — دفتر فنی بابامنیر",
+    "🛠️ خدمات پیک‌نیک پر کنی و تعمیرات سیار در محل شما",
+    "📞 ثبت سوال و درخواست آنلاین — پاسخ از طریق ایمیل و تماس",
+]
 
-def build_system_prompt(weather: dict) -> str:
-    return f"""تو یک دستیار کشاورزی هوشمند و باتجربه مخصوص منطقه **بابامنیر** (استان فارس) هستی.
+def show_rotating_banner():
+    if "banner_idx" not in st.session_state:
+        st.session_state.banner_idx = 0
 
-اطلاعات هواشناسی فعلی:
-- مکان: {weather['location']}
-- تاریخ: {weather['date']} | ساعت {weather['time']}
-- دمای فعلی: {weather['temp']}°C (احساس: {weather['feels_like']}°C)
-- حداقل / حداکثر: {weather['min_temp']} / {weather['max_temp']}°C
-- رطوبت: {weather['humidity']}%
-- احتمال بارش: {weather['rain_prob']}%
-- باد: {weather['wind']} km/h از {weather['wind_dir']}
-- وضعیت: {weather['condition']}
-- ET₀ امروز: {weather['et0']} میلی‌متر
+    # نمایش بنر فعلی
+    current = BANNERS[st.session_state.banner_idx % len(BANNERS)]
+    st.markdown(f'<div class="banner-box">{current}</div>', unsafe_allow_html=True)
 
-دستورالعمل‌ها:
-- پاسخ‌ها را ساده، کاربردی و به زبان فارسی بده.
-- توصیه‌های آبیاری را بر اساس ET₀ و احتمال بارش بده.
-- مختصر و عملی صحبت کن.
-"""
-
-def ask_grok_page(weather: dict):
-    st.header("🤖 از من بپرس — دستیار کشاورزی بابامنیر")
-    st.caption("سوالات خود را در مورد آبیاری، سم‌پاشی، کاشت و شرایط فعلی بپرسید.")
-
-    if "chat_messages" not in st.session_state:
-        st.session_state.chat_messages = []
-
-    for msg in st.session_state.chat_messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-
-    if prompt := st.chat_input("سوال خود را بنویسید..."):
-        st.session_state.chat_messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        system_prompt = build_system_prompt(weather)
-        recent = st.session_state.chat_messages[-8:]
-        api_messages = [{"role": "system", "content": system_prompt}] + recent
-
-        with st.chat_message("assistant"):
-            with st.spinner("در حال بررسی شرایط فعلی..."):
-                try:
-                    client = get_grok_client()
-                    response = client.chat.completions.create(
-                        model="grok-3",
-                        messages=api_messages,
-                        temperature=0.35,
-                        max_tokens=800
-                    )
-                    answer = response.choices[0].message.content
-                    st.markdown(answer)
-                    st.session_state.chat_messages.append({"role": "assistant", "content": answer})
-                except Exception as e:
-                    st.error(f"خطا در ارتباط با گروک: {e}")
-
-    col1, col2 = st.columns(2)
+    # دکمه‌های کنترل
+    col1, col2, col3 = st.columns([1, 2, 1])
     with col1:
-        if st.button("🗑️ پاک کردن گفتگو", use_container_width=True):
-            st.session_state.chat_messages = []
+        if st.button("◀ قبلی"):
+            st.session_state.banner_idx = (st.session_state.banner_idx - 1) % len(BANNERS)
+            st.rerun()
+    with col3:
+        if st.button("بعدی ▶"):
+            st.session_state.banner_idx = (st.session_state.banner_idx + 1) % len(BANNERS)
             st.rerun()
 
 # -------------------------------------------------
-# بخش پایش ماهواره‌ای (NDVI)
+# صفحات
 # -------------------------------------------------
-def initialize_gee():
-    try:
-        credentials = ee.ServiceAccountCredentials(
-            email=st.secrets["gee"]["client_email"],
-            key_data=st.secrets["gee"]["private_key"]
-        )
-        ee.Initialize(credentials)
-        return True
-    except Exception as e:
-        st.error(f"خطا در اتصال به Google Earth Engine: {e}")
-        return False
+def page_summary(data, location_name):
+    st.markdown(f'<div class="main-title">گزارش روزانه کشاورزی {location_name}</div>', unsafe_allow_html=True)
 
-def get_babamonir_region():
-    point = ee.Geometry.Point(51.206, 30.072)
-    return point.buffer(6000)
+    # بنر چرخشی
+    show_rotating_banner()
 
-def satellite_page():
-    st.header("🛰️ پایش ماهواره‌ای — شاخص NDVI بابامنیر")
-
-    if not initialize_gee():
-        st.info("برای فعال شدن این بخش، ابتدا Service Account گوگل ارث انجین را در Secrets تنظیم کنید.")
+    if not data:
+        st.warning("داده هواشناسی در دسترس نیست.")
         return
 
-    col1, col2 = st.columns(2)
-    with col1:
-        days = st.slider("چند روز اخیر؟", 7, 45, 15)
-    with col2:
-        cloud = st.slider("حداکثر پوشش ابر (%)", 5, 40, 20)
+    current = data.get("current", {})
+    daily = data.get("daily", {})
 
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=days)
-    start_str = start_date.strftime("%Y-%m-%d")
-    end_str = end_date.strftime("%Y-%m-%d")
+    temp = current.get("temperature_2m", "–")
+    humidity = current.get("relative_humidity_2m", "–")
+    wind_speed = current.get("wind_speed_10m", "–")
+    wind_dir = wind_dir_to_text(current.get("wind_direction_10m", 0))
+    pressure = current.get("surface_pressure", "–")
+    condition = weather_code_to_text(current.get("weather_code", 0))
+    et0 = daily.get("et0_fao_evapotranspiration", [None])[0]
+    rain_prob = daily.get("precipitation_probability_max", [0])[0]
+    max_temps = daily.get("temperature_2m_max", [])
+    min_temps = daily.get("temperature_2m_min", [])
 
-    region = get_babamonir_region()
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("ET₀", f"{et0:.1f} mm" if et0 else "–")
+    c2.metric("احتمال بارش", f"{rain_prob}%")
+    c3.metric("رطوبت", f"{humidity}%")
+    c4.metric("حداقل / حداکثر", f"{min_temps[0]:.0f} / {max_temps[0]:.0f}°C" if max_temps else "–")
+    c5.metric("دمای فعلی", f"{temp}°C")
 
-    with st.spinner("در حال دریافت تصاویر ماهواره‌ای..."):
-        try:
-            collection = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-                          .filterBounds(region)
-                          .filterDate(start_str, end_str)
-                          .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", cloud)))
+    st.info(f"وضعیت فعلی: {condition} | باد: {wind_speed} km/h از {wind_dir} | فشار: {pressure} hPa")
 
-            def add_ndvi(img):
-                ndvi = img.normalizedDifference(["B8", "B4"]).rename("NDVI")
-                return img.addBands(ndvi)
-
-            ndvi_col = collection.map(add_ndvi)
-            ndvi_img = ndvi_col.median().select("NDVI").clip(region)
-
-            mean_dict = ndvi_img.reduceRegion(
-                reducer=ee.Reducer.mean(),
-                geometry=region,
-                scale=10,
-                maxPixels=1e9
-            )
-            mean_ndvi = mean_dict.getInfo().get("NDVI")
-
-            if mean_ndvi is None:
-                st.warning("تصویر مناسبی پیدا نشد. بازه یا درصد ابر را تغییر دهید.")
-                return
-
-            st.metric("میانگین NDVI منطقه", f"{mean_ndvi:.3f}")
-            st.caption(f"بازه: {start_str} تا {end_str}")
-
-            Map = geemap.Map(center=[30.072, 51.206], zoom=12)
-            ndvi_vis = {
-                "min": 0.0, "max": 0.8,
-                "palette": ["FFFFFF", "CE7E45", "DF923D", "F1B555", "FCD163",
-                            "99B718", "74A901", "66A000", "529400", "3E8601"]
-            }
-            Map.addLayer(ndvi_img, ndvi_vis, "NDVI")
-            Map.addLayer(region, {"color": "red"}, "محدوده", opacity=0.3)
-            Map.to_streamlit(height=500)
-
-        except Exception as e:
-            st.error(f"خطا: {e}")
-
-# -------------------------------------------------
-# صفحه خلاصه روز
-# -------------------------------------------------
-def daily_summary_page(weather: dict):
-    st.title("🌾 از بابامنیر چه خبر")
-    st.caption(f"منطقه: {weather['location']} | تاریخ: {weather['date']} | ساعت: {weather['time']}")
-
-    col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("ET₀ امروز", f"{weather['et0']} mm")
-    col2.metric("احتمال بارش", f"{weather['rain_prob']}%")
-    col3.metric("رطوبت", f"{weather['humidity']}%")
-    col4.metric("حداقل / حداکثر", f"{weather['min_temp']} / {weather['max_temp']}°C")
-    col5.metric("دمای فعلی", f"{weather['temp']}°C", delta=f"احساس {weather['feels_like']}°C")
-
-    st.info(f"وضعیت فعلی: {weather['condition']} | باد: {weather['wind']} km/h از {weather['wind_dir']}")
-
-    st.subheader("📈 پیش‌بینی دمای ۷ روزه")
-    days = ["۲۴ آبان", "۲۵ آبان", "۲۶ آبان", "۲۷ آبان", "۲۸ آبان", "۲۹ آبان", "۳۰ آبان"]
-    max_temps = [25, 25, 24, 25, 24, 23, 22]
-    min_temps = [10, 9, 9, 8, 8, 7, 10]
-
+    st.subheader("📈 پیش‌بینی دمای ۷ روز آینده")
+    days = [f"روز {i+1}" for i in range(len(max_temps))]
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=days, y=max_temps, mode="lines+markers", name="حداکثر", line=dict(color="red")))
     fig.add_trace(go.Scatter(x=days, y=min_temps, mode="lines+markers", name="حداقل", line=dict(color="blue")))
-    fig.update_layout(height=350, margin=dict(l=20, r=20, t=30, b=20))
+    fig.update_layout(height=340, margin=dict(l=20, r=20, t=30, b=20))
     st.plotly_chart(fig, use_container_width=True)
 
-# -------------------------------------------------
-# صفحات دیگر (آماده برای پر کردن)
-# -------------------------------------------------
-def placeholder_page(title: str):
+
+def page_mobile():
+    st.header("📱 خدمات موبایل")
+    st.caption("کلیه کارهای فنی و تعمیراتی توسط تعمیرکار مجرب انجام می‌شود.")
+
+    show_rotating_banner()
+
+    st.markdown("---")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("### 🔧 تعمیرات تخصصی")
+        st.markdown("""
+        <div class="service-card mobile-card">
+        <b>انواع گوشی‌های تحت پوشش:</b><br>
+        • گوشی‌های چینی (شیائومی، ریلمی، آنر، هواوی، پوکو و ...)<br>
+        • سامسونگ (تمام سری‌ها)<br>
+        • موتورولا<br><br>
+        <b>خدمات قابل ارائه:</b><br>
+        • تعویض ال‌سی‌دی و تاچ<br>
+        • تعویض باتری اصل و فیک<br>
+        • تعمیرات برد و ریزکاری<br>
+        • حل مشکلات نرم‌افزاری و آنلاک<br>
+        • تعویض درب پشت، قاب و قطعات جانبی<br>
+        • گارانتی خدمات انجام‌شده
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col2:
+        st.markdown("### 💰 خرید و فروش")
+        st.markdown("""
+        <div class="service-card mobile-card">
+        • خرید گوشی کارکرده با قیمت منصفانه<br>
+        • فروش گوشی‌های سالم و تست‌شده<br>
+        • معاوضه گوشی<br>
+        • مشاوره قبل از خرید<br>
+        • کارشناسی گوشی در محل
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.success("برای ثبت درخواست تعمیر یا خرید و فروش با شماره ۰۹۱۷۴۸۰۸۷۵۵ تماس بگیرید یا در ایتا پیام دهید.")
+
+
+def page_home_appliances():
+    st.header("🛠️ تعمیرات لوازم خانگی و خدمات در محل")
+    st.caption("خدمات فنی در محل شما انجام می‌شود.")
+
+    show_rotating_banner()
+
+    st.markdown("---")
+
+    st.markdown("""
+    <div class="service-card home-card">
+    <b>خدمات قابل ارائه:</b><br>
+    • تنظیمات و تعمیر تلویزیون<br>
+    • تعمیر و سرویس آبگرمکن<br>
+    • تعمیر یخچال و فریزر<br>
+    • نصب و تعمیر کابینت<br>
+    • جوشکاری سیار<br>
+    • پیک‌نیک پر کنی در محل<br>
+    • سایر خدمات فنی ساختمانی و خانگی
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.info("برای هماهنگی و اعزام تعمیرکار با شماره ۰۹۱۷۴۸۰۸۷۵۵ تماس بگیرید.")
+
+
+def page_questions():
+    st.header("📝 ثبت سوال و درخواست")
+    st.write("سوالات خود را در زمینه کشاورزی، خدمات آنلاین، نرم‌افزار گوشی یا سایر موضوعات بنویسید. پاسخ از طریق ایمیل یا تماس به شما اعلام می‌شود.")
+
+    with st.form("question_form"):
+        name = st.text_input("نام و نام خانوادگی")
+        contact = st.text_input("شماره تماس یا ایمیل")
+        category = st.selectbox("موضوع سوال", [
+            "مشکلات کشاورزی و باغداری",
+            "خدمات آنلاین و اداری",
+            "مشکلات نرم‌افزاری گوشی",
+            "درخواست تعمیر موبایل",
+            "درخواست تعمیر لوازم خانگی",
+            "سایر موضوعات"
+        ])
+        question = st.text_area("متن سوال یا درخواست", height=150)
+        submitted = st.form_submit_button("ارسال سوال")
+
+        if submitted:
+            if name and contact and question:
+                st.success("سوال شما با موفقیت ثبت شد. در اسرع وقت پاسخ داده خواهد شد.")
+                st.info("پاسخ از طریق ایمیل یا شماره تماسی که وارد کرده‌اید ارسال می‌شود.")
+            else:
+                st.warning("لطفاً تمام فیلدهای ضروری را پر کنید.")
+
+
+def page_placeholder(title):
     st.header(title)
     st.info("این بخش به زودی تکمیل می‌شود.")
+    show_rotating_banner()
+
 
 # -------------------------------------------------
-# منوی اصلی
+# سایدبار
 # -------------------------------------------------
 with st.sidebar:
-    st.markdown("## 🌾 از بابامنیر چه خبر")
+    st.markdown("## 🌾 دفتر فنی بابامنیر")
+    st.caption("زیر نظر مهندس افشین دهقان")
     st.markdown("---")
-    
+
+    location = st.selectbox("انتخاب منطقه", list(LOCATIONS.keys()))
+
+    st.markdown("---")
     menu = st.radio(
         "بخش‌های داشبورد",
         [
             "خلاصه روز",
+            "خدمات موبایل",
+            "تعمیرات لوازم خانگی",
+            "ثبت سوال و درخواست",
             "هواشناسی زنده",
-            "مقایسه مناطق",
-            "اخبار و هشدارها",
-            "از من بپرس",
             "قیمت نهاده‌ها",
             "توصیه‌های فنی",
-            "پایش ماهواره‌ای",
-            "تنظیمات و نوتیفیکیشن"
-        ],
-        label_visibility="collapsed"
+            "اخبار و منابع"
+        ]
     )
-    
+
     st.markdown("---")
-    st.caption("ساعت: ۱۹:۲۰")
-    st.caption("سه‌شنبه ۳ آذر ۱۴۰۵")
-    st.caption("واتساپ: ۰۹۱۷۴۸۰۸۷۵۵")
+    st.caption("تماس: ۰۹۱۷۴۸۰۸۷۵۵")
+    st.caption("ایتا و روبیکا: a.d3469@")
 
 # -------------------------------------------------
-# مسیریابی صفحات
+# اجرای صفحات
 # -------------------------------------------------
-weather = get_current_weather()
+loc = LOCATIONS[location]
+data = get_weather_data(loc["lat"], loc["lon"])
 
 if menu == "خلاصه روز":
-    daily_summary_page(weather)
-elif menu == "از من بپرس":
-    ask_grok_page(weather)
-elif menu == "پایش ماهواره‌ای":
-    satellite_page()
+    page_summary(data, loc["name"])
+elif menu == "خدمات موبایل":
+    page_mobile()
+elif menu == "تعمیرات لوازم خانگی":
+    page_home_appliances()
+elif menu == "ثبت سوال و درخواست":
+    page_questions()
 elif menu == "هواشناسی زنده":
-    placeholder_page("🌤️ هواشناسی زنده")
-elif menu == "مقایسه مناطق":
-    placeholder_page("📊 مقایسه مناطق")
-elif menu == "اخبار و هشدارها":
-    placeholder_page("📰 اخبار و هشدارها")
+    page_placeholder("🌤️ هواشناسی زنده")
 elif menu == "قیمت نهاده‌ها":
-    placeholder_page("💰 قیمت نهاده‌ها")
+    page_placeholder("💰 قیمت نهاده‌ها")
 elif menu == "توصیه‌های فنی":
-    placeholder_page("🛠️ توصیه‌های فنی")
-elif menu == "تنظیمات و نوتیفیکیشن":
-    placeholder_page("⚙️ تنظیمات و نوتیفیکیشن")
+    page_placeholder("🛠️ توصیه‌های فنی")
+elif menu == "اخبار و منابع":
+    page_placeholder("📰 اخبار و منابع")
